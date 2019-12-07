@@ -36,7 +36,7 @@ GLFWwindow *g_window = NULL;
 
 /* load a mesh using the assimp library */
 bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
-	const aiScene *scene = aiImportFile( file_name, aiProcess_Triangulate );
+	const aiScene *scene = aiImportFile( file_name, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices );
 	if ( !scene ) {
 		fprintf( stderr, "ERROR: reading mesh %s\n", file_name );
 		return false;
@@ -50,10 +50,13 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 
 	/* get first mesh in file only */
 	const aiMesh *mesh = scene->mMeshes[0];
-	printf( "    %i vertices in mesh[0]\n", mesh->mNumVertices );
+	printf( "	%i vertices and %i triangles in mesh[0],\n", mesh->mNumVertices, mesh->mNumFaces );
 
 	/* pass back number of vertex points in mesh */
-	*point_count = mesh->mNumVertices;
+	*point_count = mesh->mNumFaces; // with indexed geometry we might be re-using vertices, so we want the total number of triangles
+
+	/* mNumVertices tells us the number of vertices, some of them might be re-used by the indices */
+	int num_vertices = mesh->mNumVertices;
 
 	/* generate a VAO, using the pass-by-reference parameter that we give to the
 	function */
@@ -67,9 +70,10 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 	GLfloat *points = NULL;		 // array of vertex points
 	GLfloat *normals = NULL;	 // array of vertex normals
 	GLfloat *texcoords = NULL; // array of texture coordinates
+	GLuint *indices = NULL;      // array of vertex indices
 	if ( mesh->HasPositions() ) {
-		points = (GLfloat *)malloc( *point_count * 3 * sizeof( GLfloat ) );
-		for ( int i = 0; i < *point_count; i++ ) {
+		points = (GLfloat *)malloc( num_vertices * 3 * sizeof( GLfloat ) );
+		for ( int i = 0; i < num_vertices; i++ ) {
 			const aiVector3D *vp = &( mesh->mVertices[i] );
 			points[i * 3] = (GLfloat)vp->x;
 			points[i * 3 + 1] = (GLfloat)vp->y;
@@ -77,8 +81,8 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 		}
 	}
 	if ( mesh->HasNormals() ) {
-		normals = (GLfloat *)malloc( *point_count * 3 * sizeof( GLfloat ) );
-		for ( int i = 0; i < *point_count; i++ ) {
+		normals = (GLfloat *)malloc( num_vertices * 3 * sizeof( GLfloat ) );
+		for ( int i = 0; i < num_vertices; i++ ) {
 			const aiVector3D *vn = &( mesh->mNormals[i] );
 			normals[i * 3] = (GLfloat)vn->x;
 			normals[i * 3 + 1] = (GLfloat)vn->y;
@@ -86,11 +90,19 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 		}
 	}
 	if ( mesh->HasTextureCoords( 0 ) ) {
-		texcoords = (GLfloat *)malloc( *point_count * 2 * sizeof( GLfloat ) );
-		for ( int i = 0; i < *point_count; i++ ) {
+		texcoords = (GLfloat *)malloc( num_vertices * 2 * sizeof( GLfloat ) );
+		for ( int i = 0; i < num_vertices; i++ ) {
 			const aiVector3D *vt = &( mesh->mTextureCoords[0][i] );
 			texcoords[i * 2] = (GLfloat)vt->x;
 			texcoords[i * 2 + 1] = (GLfloat)vt->y;
+		}
+	}
+	if( mesh->HasFaces() ) {
+		indices = (GLuint *)malloc ( *point_count * 3 * sizeof( GLuint ) );
+		for( int i = 0; i < *point_count; i++ ) {
+			indices[i * 3] = mesh->mFaces[i].mIndices[0];
+			indices[i * 3 + 1] = mesh->mFaces[i].mIndices[1];
+			indices[i * 3 + 2] = mesh->mFaces[i].mIndices[2];
 		}
 	}
 
@@ -99,7 +111,7 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 		GLuint vbo;
 		glGenBuffers( 1, &vbo );
 		glBindBuffer( GL_ARRAY_BUFFER, vbo );
-		glBufferData( GL_ARRAY_BUFFER, 3 * *point_count * sizeof( GLfloat ), points,
+		glBufferData( GL_ARRAY_BUFFER, 3 * num_vertices * sizeof( GLfloat ), points,
 									GL_STATIC_DRAW );
 		glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE, 0, NULL );
 		glEnableVertexAttribArray( 0 );
@@ -109,7 +121,7 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 		GLuint vbo;
 		glGenBuffers( 1, &vbo );
 		glBindBuffer( GL_ARRAY_BUFFER, vbo );
-		glBufferData( GL_ARRAY_BUFFER, 3 * *point_count * sizeof( GLfloat ), normals,
+		glBufferData( GL_ARRAY_BUFFER, 3 * num_vertices * sizeof( GLfloat ), normals,
 									GL_STATIC_DRAW );
 		glVertexAttribPointer( 1, 3, GL_FLOAT, GL_FALSE, 0, NULL );
 		glEnableVertexAttribArray( 1 );
@@ -119,11 +131,21 @@ bool load_mesh( const char *file_name, GLuint *vao, int *point_count ) {
 		GLuint vbo;
 		glGenBuffers( 1, &vbo );
 		glBindBuffer( GL_ARRAY_BUFFER, vbo );
-		glBufferData( GL_ARRAY_BUFFER, 2 * *point_count * sizeof( GLfloat ), texcoords,
+		glBufferData( GL_ARRAY_BUFFER, 2 * num_vertices * sizeof( GLfloat ), texcoords,
 									GL_STATIC_DRAW );
 		glVertexAttribPointer( 2, 2, GL_FLOAT, GL_FALSE, 0, NULL );
 		glEnableVertexAttribArray( 2 );
 		free( texcoords );
+	}
+	if( mesh->HasFaces() ) {
+		GLuint vbo;
+		glGenBuffers( 1, &vbo );
+		glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, vbo );
+		glBufferData( GL_ELEMENT_ARRAY_BUFFER, 3 * *point_count * sizeof( GLuint ), 
+									indices, GL_STATIC_DRAW );
+		glVertexAttribPointer( 3, 3, GL_FLOAT, GL_FALSE, 0, NULL );
+		glEnableVertexAttribArray( 3 );
+		free( indices );
 	}
 	if ( mesh->HasTangentsAndBitangents() ) {
 		// NB: could store/print tangents here
@@ -188,6 +210,7 @@ int main() {
 	glUseProgram( shader_programme );
 	glUniformMatrix4fv( proj_mat_location, 1, GL_FALSE, proj_mat );
 
+	//glfwSwapInterval(0); // to unlock the fps, for performance testing purposes
 	while ( !glfwWindowShouldClose( g_window ) ) {
 		static double previous_seconds = glfwGetTime();
 		double current_seconds = glfwGetTime();
@@ -201,7 +224,7 @@ int main() {
 
 		glUseProgram( shader_programme );
 		glBindVertexArray( monkey_vao );
-		glDrawArrays( GL_TRIANGLES, 0, monkey_point_count );
+		glDrawElements( GL_TRIANGLES, monkey_point_count * 3, GL_UNSIGNED_INT, NULL ); // draw using indices
 		// update other events like input handling
 		glfwPollEvents();
 
